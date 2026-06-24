@@ -1,0 +1,100 @@
+import os
+import re
+
+# 在 MARIO PROJECT 根目录下运行此脚本
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+MAIN_DIR = os.path.join(BASE_DIR, "main")
+
+# 要插入的路径初始化代码块
+PATH_INIT = '''
+# ==========================================
+# 自动路径配置（由fix_paths.py生成）
+# ==========================================
+import os as _os
+_BASE_DIR = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+_FONT_DIR = _os.path.join(_BASE_DIR, "assets", "fonts")
+_IMG_DIR  = _os.path.join(_BASE_DIR, "assets", "images")
+
+def _p(folder, name):
+    return _os.path.join(folder, name)
+'''
+
+# 文件名替换映射
+FONT_REPLACEMENTS = [
+    ('"zpix.ttf"',          '_p(_FONT_DIR, "zpix.ttf")'),
+    ("'zpix.ttf'",          "_p(_FONT_DIR, 'zpix.ttf')"),
+    ('"SuperMario256.ttf"', '_p(_FONT_DIR, "SuperMario256.ttf")'),
+    ("'SuperMario256.ttf'", "_p(_FONT_DIR, 'SuperMario256.ttf')"),
+]
+
+IMG_REPLACEMENTS = [
+    ('"mario.png"',      '_p(_IMG_DIR, "mario.png")'),
+    ("'mario.png'",      "_p(_IMG_DIR, 'mario.png')"),
+    ('"goomba.png"',     '_p(_IMG_DIR, "goomba.png")'),
+    ("'goomba.png'",     "_p(_IMG_DIR, 'goomba.png')"),
+    ('"cap.png"',        '_p(_IMG_DIR, "cap.png")'),
+    ("'cap.png'",        "_p(_IMG_DIR, 'cap.png')"),
+    ('"coin.png"',       '_p(_IMG_DIR, "coin.png")'),
+    ("'coin.png'",       "_p(_IMG_DIR, 'coin.png')"),
+    ('"background.png"', '_p(_IMG_DIR, "background.png")'),
+    ("'background.png'", "_p(_IMG_DIR, 'background.png')"),
+]
+
+# os.path.exists 检查也要更新
+EXISTS_REPLACEMENTS = [
+    ('os.path.exists("zpix.ttf")',          'os.path.exists(_p(_FONT_DIR, "zpix.ttf"))'),
+    ("os.path.exists('zpix.ttf')",          "os.path.exists(_p(_FONT_DIR, 'zpix.ttf'))"),
+    ('os.path.exists("SuperMario256.ttf")', 'os.path.exists(_p(_FONT_DIR, "SuperMario256.ttf"))'),
+    ("os.path.exists('SuperMario256.ttf')", "os.path.exists(_p(_FONT_DIR, 'SuperMario256.ttf'))"),
+    ('os.path.exists("background.png")',    'os.path.exists(_p(_IMG_DIR, "background.png"))'),
+    ("os.path.exists('background.png')",    "os.path.exists(_p(_IMG_DIR, 'background.png'))"),
+]
+
+ALL_REPLACEMENTS = FONT_REPLACEMENTS + IMG_REPLACEMENTS + EXISTS_REPLACEMENTS
+
+MARKER = "# 自动路径配置（由fix_paths.py生成）"
+
+def process_file(filepath):
+    with open(filepath, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    # 已经处理过的跳过
+    if MARKER in content:
+        print(f"  [跳过] 已处理过: {os.path.basename(filepath)}")
+        return
+
+    # 找 import pygame 的位置，在它后面插入路径初始化块
+    insert_pos = content.find("import pygame")
+    if insert_pos == -1:
+        print(f"  [跳过] 未找到 import pygame: {os.path.basename(filepath)}")
+        return
+
+    # 找到这行的末尾
+    line_end = content.find("\n", insert_pos)
+    content = content[:line_end+1] + PATH_INIT + content[line_end+1:]
+
+    # 替换所有文件名引用
+    for old, new in ALL_REPLACEMENTS:
+        content = content.replace(old, new)
+
+    with open(filepath, 'w', encoding='utf-8') as f:
+        f.write(content)
+
+    print(f"  [完成] {os.path.basename(filepath)}")
+
+# 处理 main/ 目录下所有 .py 文件
+if not os.path.exists(MAIN_DIR):
+    print(f"找不到 main 目录: {MAIN_DIR}")
+    print("请把 fix_paths.py 放在 MARIO PROJECT 根目录下运行")
+else:
+    print(f"扫描目录: {MAIN_DIR}\n")
+    py_files = [f for f in os.listdir(MAIN_DIR) if f.endswith('.py')]
+    for fname in py_files:
+        fpath = os.path.join(MAIN_DIR, fname)
+        print(f"处理: {fname}")
+        try:
+            process_file(fpath)
+        except Exception as e:
+            print(f"  [错误] {e}")
+
+    print("\n全部完成！")
