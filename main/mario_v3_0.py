@@ -3,6 +3,12 @@
 # -进度条，trial之间的说明，跳过键
 import pygame
 
+from pylsl import StreamInfo, StreamOutlet
+
+# 创建LSL marker流
+info = StreamInfo('MarkerStream', 'Markers', 1, 0, 'string', 'mario_bci')
+outlet = StreamOutlet(info)
+
 # ==========================================
 # 自动路径配置（由fix_paths.py生成）
 # ==========================================
@@ -211,7 +217,7 @@ def run_block_complete_screen(surface, virtual_screen, block_idx, total_blocks):
     return None
 
 
-def run_rest_block(surface, virtual_screen, duration_ms=10000):
+def run_rest_block(surface, virtual_screen, duration_ms=20000):
     start = pygame.time.get_ticks()
     while pygame.time.get_ticks() - start < duration_ms:
         draw_retro_scenery(virtual_screen)
@@ -285,7 +291,7 @@ NUM_BLOCKS = 3
 run_game_start_menu(screen, GAME_WIDTH, GAME_HEIGHT, SCALE)
 
 TOTAL_TRIALS = 20
-FEEDBACK_DUR = 1500
+FEEDBACK_DUR = 2000
 end_experiment = False
 
 for block_idx in range(NUM_BLOCKS):
@@ -443,7 +449,7 @@ for block_idx in range(NUM_BLOCKS):
 
             elif trial_type == "竖":
                 virtual_screen.blit(goomba_normal, (GOOMBA_X, GOOMBA_Y))
-                jump_offset = int(75 * (4 * progress * (1 - progress)))
+                jump_offset = int(60 * (4 * progress * (1 - progress)))
                 jump_y = MARIO_Y - jump_offset
                 virtual_screen.blit(mario_stand, (MARIO_X, jump_y))
                 if not coin_eaten:
@@ -482,7 +488,7 @@ for block_idx in range(NUM_BLOCKS):
         if skip_current_block or end_experiment:
             break
 
-        # --- 7. 眨眼休息期 1.5秒 ---
+        # --- 7. 休息期 1.5秒 ---
         key = run_blink_rest(screen, virtual_screen, trial_idx, block_idx, duration_ms=1500)
         if key == "skip_block":
             skip_current_block = True
@@ -500,7 +506,7 @@ for block_idx in range(NUM_BLOCKS):
         break
 
     if block_idx < NUM_BLOCKS - 1:
-        key = run_rest_block(screen, virtual_screen, duration_ms=10000)
+        key = run_rest_block(screen, virtual_screen, duration_ms=15000)
         if key == "end":
             break
 
