@@ -99,7 +99,7 @@ def load_and_scale_sprite(img_path, target_size):
         return surf
 
 
-mario_stand = load_and_scale_sprite(_p(_IMG_DIR, "mario.png"), (36, 48))
+mario_stand = load_and_scale_sprite(_p(_IMG_DIR, "luigi.png"), (36, 48))
 goomba_normal = load_and_scale_sprite(_p(_IMG_DIR, "goomba.png"), (18, 18))
 mario_cap = load_and_scale_sprite(_p(_IMG_DIR, "cap.png"), (14, 10))
 ui_coin_img = load_and_scale_sprite(_p(_IMG_DIR, "coin.png"), (16, 16))
@@ -256,8 +256,7 @@ def run_rest_block(surface, virtual_screen, duration_ms=20000):
 def run_game_start_menu(surface, game_width, game_height, scale):
     in_menu = True
     clock = pygame.time.Clock()
-    print(SCREEN_W, SCREEN_H, OFFSET_X, OFFSET_Y)
-    
+
     if os.path.exists(_p(_FONT_DIR, "SuperMario256.ttf")):
         HD_FONT_TITLE = pygame.font.Font(_p(_FONT_DIR, "SuperMario256.ttf"), 50)
         HD_FONT_TEXT = pygame.font.Font(_p(_FONT_DIR, "SuperMario256.ttf"), 35)
@@ -272,7 +271,7 @@ def run_game_start_menu(surface, game_width, game_height, scale):
 
     if os.path.exists(_p(_IMG_DIR, "background.png")):
         bg_img = pygame.image.load(_p(_IMG_DIR, "background.png")).convert()
-        bg_img = pygame.transform.scale(bg_img, (SCREEN_W, SCREEN_H))
+        bg_img = pygame.transform.scale(bg_img, (game_width * scale, game_height * scale))
     else:
         bg_img = pygame.Surface((game_width * scale, game_height * scale))
         bg_img.fill(COLOR_SKY)
