@@ -240,7 +240,7 @@ def run_blink_rest(surface, virtual_screen, trial_idx, block_idx, duration_ms=15
         virtual_screen.blit(goomba_normal, (GOOMBA_X, GOOMBA_Y))
         surface.fill((0, 0, 0))
         surface.blit(pygame.transform.scale(virtual_screen, (GAME_WIDTH * SCALE, GAME_HEIGHT * SCALE)), (OFFSET_X, OFFSET_Y))
-        draw_centered_text(surface, "【可以眨眼，准备下一轮】", UI_HINT_Y, UI_HINT_COLOR)
+        draw_centered_text(surface, "【可以眨眼放松下一轮即将开始】", UI_HINT_Y, UI_HINT_COLOR)
         draw_progress_bar(surface, trial_idx, 20, block_idx, NUM_BLOCKS)
         pygame.display.flip()
         key = handle_events()
@@ -280,7 +280,7 @@ def run_rest_block(surface, virtual_screen, duration_ms=20000):
         virtual_screen.blit(mario_stand, (MARIO_X, MARIO_Y))
         surface.fill((0, 0, 0))
         surface.blit(pygame.transform.scale(virtual_screen, (GAME_WIDTH * SCALE, GAME_HEIGHT * SCALE)), (OFFSET_X, OFFSET_Y))
-        draw_centered_text(surface, "【休息放空中，请放松】", UI_HINT_Y, UI_HINT_COLOR)
+        draw_centered_text(surface, "【休息放空中，请稍放松】", UI_HINT_Y, UI_HINT_COLOR)
         remaining = (duration_ms - (pygame.time.get_ticks() - start)) // 1000 + 1
         draw_centered_text(surface, f"{remaining}", UI_TEXT_Y, COLOR_TEXT_GOLD)
         pygame.display.flip()
@@ -424,7 +424,7 @@ for block_idx in range(NUM_BLOCKS):
             screen.fill((0, 0, 0))
             screen.blit(pygame.transform.scale(virtual_screen, (GAME_WIDTH * SCALE, GAME_HEIGHT * SCALE)), (OFFSET_X, OFFSET_Y))
 
-            draw_centered_text(screen, f"【当前任务：{trial_type}】", UI_TEXT_Y, UI_TEXT_COLOR)
+            draw_centered_text(screen, f"【当前任务：{trial_type}向想象】", UI_TEXT_Y, UI_TEXT_COLOR)
             draw_progress_bar(screen, trial_idx, TOTAL_TRIALS, block_idx, NUM_BLOCKS)
             pygame.display.flip()
             key = handle_events()
