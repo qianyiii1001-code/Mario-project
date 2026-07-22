@@ -1,13 +1,63 @@
+# 在v3_0_1版本基础上修改：
+# -去掉按空格准备阶段，改为自动"准备开始"提示（1秒）
+# -3-2-1倒计时后进入MI阶段
+# -MI阶段显示虚线辅助运动想象，虚线速度与反馈动画中马里奥行进速度一致
 # 在v2版本基础上增加了
 # -横向：改为马里奥横向跑，冲撞goomba
 # -进度条，trial之间的说明，跳过键
 import pygame
 
-from pylsl import StreamInfo, StreamOutlet
+# ==========================================
+# 并行口 (LPT) TTL Trigger 发送模块
+# ==========================================
+# 使用 ctypes 直接调用 inpout32.dll / inpoutx64.dll 操作并口
+# 无需安装任何第三方 Python 包（pyparallel / psychopy 等）
+#
+# 驱动安装:
+#   1. 下载 InpOutBinaries: http://www.highrez.co.uk/downloads/inpout32/
+#   2. 解压后将 inpout32.dll (32位) 或 inpoutx64.dll (64位) 放到 C:\Windows\System32\
+#   3. 以管理员权限运行本程序
+#
+# 如果环境不具备并口，程序仍可运行（仅打印日志，不发送硬件信号）
 
-# 创建LSL marker流
-info = StreamInfo('MarkerStream', 'Markers', 1, 0, 'string', 'mario_bci')
-outlet = StreamOutlet(info)
+import ctypes as _ctypes
+
+# ── 并口初始化 ──────────────────────────────────────────────────
+# 常见地址: LPT1=0x0378, LPT2=0x0278, LPT3=0x03BC
+# 在设备管理器 > 端口(COM和LPT) > LPT端口 > 资源 中查看正确地址
+_PARALLEL_PORT_ADDRESS = 0x3FF8  # ← 根据实际硬件修改此地址
+_inpout = None
+_PARALLEL_OK = False
+
+try:
+    # 尝试加载 64 位驱动
+    _inpout = _ctypes.WinDLL("inpoutx64.dll")
+    print("[并口] 加载 inpoutx64.dll (64位驱动)")
+except OSError:
+    pass
+
+if _inpout is None:
+    try:
+        # 尝试加载 32 位驱动
+        _inpout = _ctypes.WinDLL("inpout32.dll")
+        print("[并口] 加载 inpout32.dll (32位驱动)")
+    except OSError:
+        pass
+
+if _inpout is None:
+    print("[并口] 驱动未找到: 请将 inpout32.dll 或 inpoutx64.dll 放到 C:\\Windows\\System32\\")
+else:
+    try:
+        # 验证并口可访问: 先读取数据寄存器
+        _inpout.Inp32(_PARALLEL_PORT_ADDRESS)
+        _PARALLEL_OK = True
+        print(f"[并口] 初始化成功: 地址 0x{_PARALLEL_PORT_ADDRESS:04X}")
+    except Exception as _e:
+        print(f"[并口] 初始化失败: {_e}")
+        print("[并口] 请确认: 1) 地址正确  2) 以管理员运行")
+
+if not _PARALLEL_OK:
+    print("[并口] 将以纯日志模式运行（不发送硬件 TTL 信号）")
 
 # ==========================================
 # 自动路径配置（由fix_paths.py生成）
@@ -65,13 +115,13 @@ FONT_PATH = _p(_FONT_DIR, "zpix.ttf") if os.path.exists(_p(_FONT_DIR, "zpix.ttf"
 if FONT_PATH:
     font = pygame.font.Font(FONT_PATH, int(25 * FONT_SCALE))
     small_font = pygame.font.Font(FONT_PATH, int(14 * FONT_SCALE))
-    coin_font = pygame.font.Font(FONT_PATH, int(9 * FONT_SCALE))
+    coin_font = pygame.font.Font(FONT_PATH, 9)         # 虚拟画布尺寸，不随SCALE放大
 else:
     font = safe_sysfont("SimHei", int(24 * FONT_SCALE))
     small_font = safe_sysfont("SimHei", int(18 * FONT_SCALE))
-    coin_font = safe_sysfont("SimHei", int(18 * FONT_SCALE))
+    coin_font = safe_sysfont("SimHei", 12)             # 虚拟画布尺寸，不随SCALE放大
 
-UI_TEXT_Y = GAME_HEIGHT + int(8 * FONT_SCALE)   # 游戏区下方，随字号缩放
+UI_TEXT_Y = SCREEN_H // 2 - OFFSET_Y              # 屏幕长一半（相对游戏区顶部偏移）
 UI_HINT_Y = int(10 * FONT_SCALE)                 # 游戏区内顶部
 UI_TEXT_COLOR = COLOR_TEXT_GOLD
 UI_HINT_COLOR = COLOR_WHITE
@@ -85,12 +135,49 @@ GOOMBA_X, GOOMBA_Y = 180, 140
 coin_count = 0
 
 # ==========================================
-# Marker 工具函数
+# Trigger 编码表 & 发送函数
 # ==========================================
-def send_marker(marker_str):
-    """同时发送 LSL marker 和打印日志"""
-    outlet.push_sample([marker_str])
-    print(f"[MARKER] {marker_str}")
+# 将原来的字符串 Marker 映射为整数 Trigger code (1~255)
+# 每个事件类型一个固定 code，block/trial/class 信息由打印日志记录
+TRIGGER = {
+    # ★ MI 阶段（运动想象）—— 核心 Marker，横竖分开编码
+    "MI_START_HENG":   1,   # 横向想象开始
+    "MI_END_HENG":    11,   # 横向想象结束
+    "MI_START_SHU":    2,   # 竖向想象开始
+    "MI_END_SHU":     12,   # 竖向想象结束
+    # 实验控制
+    "BLOCK_START":   100,   # Block 开始
+    "BLOCK_END":     101,   # Block 结束
+    "EXPERIMENT_END": 255,  # 实验结束
+}
+
+
+def send_trigger(code, duration_ms=15):
+    """发送 TTL Trigger: 设置数据线 → 保持 duration_ms → 清零
+
+    Args:
+        code: 整数 trigger code (1~255)
+        duration_ms: 脉冲宽度（毫秒），默认 15ms（BP 建议 ≥10ms）
+    """
+    if _PARALLEL_OK and _inpout is not None:
+        try:
+            # 优先使用 8 位写（避免 Out32 写入多余字节干扰 BP 读取）
+            _write_port = getattr(_inpout, "DlPortWritePortUchar", None)
+            if _write_port is not None:
+                _write_port(_PARALLEL_PORT_ADDRESS, code)
+            else:
+                _inpout.Out32(_PARALLEL_PORT_ADDRESS, code)
+            pygame.time.wait(duration_ms)
+            if _write_port is not None:
+                _write_port(_PARALLEL_PORT_ADDRESS, 0)
+            else:
+                _inpout.Out32(_PARALLEL_PORT_ADDRESS, 0)
+        except Exception as _e:
+            print(f"[TRIGGER] 并口发送失败: {_e}")
+    else:
+        # 无并口时模拟延迟，保持时间节奏一致
+        pygame.time.wait(duration_ms)
+    print(f"[TRIGGER] code={code:3d}")
 
 
 def load_and_scale_sprite(img_path, target_size):
@@ -120,6 +207,64 @@ else:
     print("[警告] 未找到 coin.wav 音效文件")
 
 
+def _generate_stage_clear_sound():
+    """合成一段简短上行琶音作为 Block 完成音效（类似马里奥通关旋律）"""
+    sample_rate = 22050
+    # 四个上行音符: C5 → E5 → G5 → C6，每个 120ms
+    notes = [
+        (523.25, 0.12),   # C5
+        (659.25, 0.12),   # E5
+        (783.99, 0.12),   # G5
+        (1046.50, 0.24),  # C6 (稍长)
+    ]
+    total_samples = sum(int(sample_rate * dur) for _, dur in notes)
+    # 结尾多给 50ms 防止截断
+    total_samples += int(sample_rate * 0.05)
+
+    import struct
+    from io import BytesIO
+
+    buf = BytesIO()
+    # WAV header
+    data_size = total_samples * 2  # 16-bit mono
+    buf.write(b"RIFF")
+    buf.write(struct.pack("<I", 36 + data_size))
+    buf.write(b"WAVE")
+    buf.write(b"fmt ")
+    buf.write(struct.pack("<IHHIIHH", 16, 1, 1, sample_rate,
+                          sample_rate * 2, 2, 16))
+    buf.write(b"data")
+    buf.write(struct.pack("<I", data_size))
+
+    for freq, duration in notes:
+        n = int(sample_rate * duration)
+        for i in range(n):
+            t = i / sample_rate
+            # 包络：快速起音 + 缓慢衰减
+            envelope = max(0.0, 1.0 - t / duration) * 0.8
+            val = int(32767 * envelope * math.sin(2 * math.pi * freq * t))
+            buf.write(struct.pack("<h", val))
+
+    # 5ms 静音收尾
+    silence_samples = int(sample_rate * 0.05)
+    for _ in range(silence_samples):
+        buf.write(struct.pack("<h", 0))
+
+    buf.seek(0)
+    try:
+        return pygame.mixer.Sound(buf)
+    except Exception:
+        return None
+
+
+stage_clear_sound = _generate_stage_clear_sound()
+if stage_clear_sound:
+    stage_clear_sound.set_volume(0.5)
+    print("[音效] Block完成音效已合成")
+else:
+    print("[警告] 无法合成Block完成音效")
+
+
 def draw_pixel_cloud(surface, x, y):
     cloud_surf = pygame.Surface((40, 24), pygame.SRCALPHA)
     pygame.draw.circle(cloud_surf, COLOR_BRICK_SHADOW, (12, 14), 10)
@@ -147,7 +292,9 @@ def draw_retro_scenery(surface):
             pygame.draw.line(surface, COLOR_BRICK_LIGHT, (bx + 1, by + 1), (bx + 1, by + 14), 1)
     surface.blit(ui_coin_img, (7, 4))
     coin_txt = coin_font.render(f"x{coin_count:02d}", True, COLOR_WHITE)
-    surface.blit(coin_txt, (22, 4))
+    # 垂直居中对齐金币图标（图标高度16px）
+    coin_txt_y = 4 + (16 - coin_txt.get_height()) // 2
+    surface.blit(coin_txt, (22, coin_txt_y))
 
 
 def draw_growing_dashed_line(surface, start, end, progress, color, dash_len=4, gap_len=4):
@@ -211,7 +358,7 @@ def handle_events(allow_space=False):
                 return "end"
             if allow_space and event.key == pygame.K_SPACE:
                 return "space"
-            
+
     return None
 
 
@@ -267,6 +414,54 @@ def run_dash_preview(surface, virtual_screen, trial_type, stage_coin_x, stage_co
     return None
 
 
+def run_countdown(surface, virtual_screen, trial_idx, block_idx, total_ms=3000):
+    """
+    在屏幕中央显示 3 → 2 → 1 倒计时。
+    total_ms: 倒计时总时长（毫秒），默认3000ms，每个数字显示约1秒。
+    """
+    numbers = [3, 2, 1]
+    interval = total_ms // len(numbers)  # 每个数字分配的时间
+
+    # 创建大号倒计数字体（比普通字体更大）
+    countdown_size = int(font.get_height() * 2.5)
+    if FONT_PATH:
+        countdown_font = pygame.font.Font(FONT_PATH, countdown_size)
+    else:
+        countdown_font = safe_sysfont("SimHei", countdown_size)
+
+    start = pygame.time.get_ticks()
+
+    for i, num in enumerate(numbers):
+        num_start = start + i * interval
+        while pygame.time.get_ticks() - num_start < interval:
+            now = pygame.time.get_ticks()
+            elapsed_in_num = now - num_start
+
+            draw_retro_scenery(virtual_screen)
+            virtual_screen.blit(mario_stand, (MARIO_X, MARIO_Y))
+            virtual_screen.blit(goomba_normal, (GOOMBA_X, GOOMBA_Y))
+            screen.fill((0, 0, 0))
+            screen.blit(pygame.transform.scale(virtual_screen,
+                         (GAME_WIDTH * SCALE, GAME_HEIGHT * SCALE)), (OFFSET_X, OFFSET_Y))
+
+            # 倒计时数字在屏幕居中（Y方向用游戏区正中间偏上一点）
+            num_surf = countdown_font.render(str(num), True, COLOR_TEXT_GOLD)
+            num_x = GAME_RECT.centerx - num_surf.get_width() // 2
+            num_y = GAME_RECT.centery - num_surf.get_height() // 2 - int(10 * FONT_SCALE)
+            screen.blit(num_surf, (num_x, num_y))
+
+            draw_progress_bar(screen, trial_idx, 20, block_idx, NUM_BLOCKS)
+            pygame.display.flip()
+
+            key = handle_events()
+            if key == "skip_block":
+                return "skip_block"
+            if key == "end":
+                return "end"
+
+    return None
+
+
 def run_freeze_frame(surface, virtual_screen, trial_idx, block_idx, duration_ms=1200):
     """Feedback结束后定格期：画面静止，金币数字稳定显示"""
     start = pygame.time.get_ticks()
@@ -292,7 +487,6 @@ def run_blink_rest(surface, virtual_screen, trial_idx, block_idx, duration_ms=15
         virtual_screen.blit(goomba_normal, (GOOMBA_X, GOOMBA_Y))
         surface.fill((0, 0, 0))
         surface.blit(pygame.transform.scale(virtual_screen, (GAME_WIDTH * SCALE, GAME_HEIGHT * SCALE)), (OFFSET_X, OFFSET_Y))
-        draw_centered_text(surface, "【可以眨眼放松下一轮即将开始】", UI_TEXT_Y + 100, UI_HINT_COLOR)
         draw_progress_bar(surface, trial_idx, 20, block_idx, NUM_BLOCKS)
         pygame.display.flip()
         key = handle_events()
@@ -304,6 +498,8 @@ def run_blink_rest(surface, virtual_screen, trial_idx, block_idx, duration_ms=15
 
 
 def run_block_complete_screen(surface, virtual_screen, block_idx, total_blocks):
+    if stage_clear_sound:
+        stage_clear_sound.play()
     duration_ms = 3000
     start = pygame.time.get_ticks()
     while pygame.time.get_ticks() - start < duration_ms:
@@ -383,12 +579,7 @@ def run_instruction_screen(surface, virtual_screen):
     clock = pygame.time.Clock()
 
     while page_idx < len(pages):
-        draw_retro_scenery(virtual_screen)
-        virtual_screen.blit(mario_stand, (MARIO_X, MARIO_Y))
-        virtual_screen.blit(goomba_normal, (GOOMBA_X, GOOMBA_Y))
         surface.fill((0, 0, 0))
-        surface.blit(pygame.transform.scale(virtual_screen,
-                     (GAME_WIDTH * SCALE, GAME_HEIGHT * SCALE)), (OFFSET_X, OFFSET_Y))
 
         lines = pages[page_idx]
         line_heights = [f.get_height() for f, _, _ in lines]
@@ -492,7 +683,7 @@ run_game_start_menu(screen, GAME_WIDTH, GAME_HEIGHT, SCALE)
 # ── 指导语 ──────────────────────────────────────────────────
 key = run_instruction_screen(screen, virtual_screen)
 if key == "end":
-    send_marker("EXPERIMENT_END")
+    send_trigger(TRIGGER["EXPERIMENT_END"])
     pygame.quit()
     sys.exit()
 
@@ -505,7 +696,8 @@ for block_idx in range(NUM_BLOCKS):
         break
 
     # ── BLOCK 开始 ──────────────────────────────────────────────
-    send_marker(f"BLOCK_START_{block_idx + 1}")
+    send_trigger(TRIGGER["BLOCK_START"])
+    print(f"[TRIGGER] BLOCK_START Block {block_idx + 1}")
 
     trials = ["横"] * 10 + ["竖"] * 10
     random.shuffle(trials)
@@ -519,7 +711,6 @@ for block_idx in range(NUM_BLOCKS):
         class_id = 1 if trial_type == "横" else 2
 
         # ── 1. REST ─────────────────────────────────────────────
-        send_marker(f"REST_START_B{block_idx+1}_T{trial_idx+1}_C{class_id}")
         start = pygame.time.get_ticks()
         while pygame.time.get_ticks() - start < 2000:
             draw_retro_scenery(virtual_screen)
@@ -535,8 +726,6 @@ for block_idx in range(NUM_BLOCKS):
                 skip_current_block = True; break
             if key == "end":
                 end_experiment = True; break
-        send_marker(f"REST_END_B{block_idx+1}_T{trial_idx+1}_C{class_id}")
-
         if skip_current_block or end_experiment:
             break
 
@@ -551,7 +740,6 @@ for block_idx in range(NUM_BLOCKS):
             stage_coin_x, stage_coin_y = -100, -100
 
         # ── 2. CUE ──────────────────────────────────────────────
-        send_marker(f"CUE_START_B{block_idx+1}_T{trial_idx+1}_C{class_id}")
         start = pygame.time.get_ticks()
         while pygame.time.get_ticks() - start < 2000:
             draw_retro_scenery(virtual_screen)
@@ -569,24 +757,12 @@ for block_idx in range(NUM_BLOCKS):
                 skip_current_block = True; break
             if key == "end":
                 end_experiment = True; break
-        send_marker(f"CUE_END_B{block_idx+1}_T{trial_idx+1}_C{class_id}")
-
         if skip_current_block or end_experiment:
             break
 
-        # ── 2.5. 虚线预览（仅Block1） ─────────────────────────────
-        if block_idx == 0:
-            result = run_dash_preview(screen, virtual_screen, trial_type, stage_coin_x, stage_coin_y)
-            if result == "skip_block":
-                skip_current_block = True
-                continue
-            if result == "end":
-                end_experiment = True
-                break
-
-        # ── 3. 按空格准备 ────────────────────────────────────────
-        waiting_for_space = True
-        while waiting_for_space:
+        # ── 3. 准备开始 ────────────────────────────────────────
+        ready_start = pygame.time.get_ticks()
+        while pygame.time.get_ticks() - ready_start < 1000:
             draw_retro_scenery(virtual_screen)
             virtual_screen.blit(mario_stand, (MARIO_X, MARIO_Y))
             virtual_screen.blit(goomba_normal, (GOOMBA_X, GOOMBA_Y))
@@ -594,32 +770,53 @@ for block_idx in range(NUM_BLOCKS):
             screen.fill((0, 0, 0))
             screen.blit(pygame.transform.scale(virtual_screen, (GAME_WIDTH * SCALE, GAME_HEIGHT * SCALE)), (OFFSET_X, OFFSET_Y))
 
-            if block_idx == 0:
-                draw_centered_text(screen, "回忆笔画轨迹，准备好后按空格开始想象", UI_TEXT_Y + 100, UI_HINT_COLOR)
-            else:
-                draw_centered_text(screen, "准备好后按空格开始想象", UI_TEXT_Y + 100, UI_HINT_COLOR)
+            draw_centered_text(screen, "准备", UI_TEXT_Y + 100, UI_HINT_COLOR)
             draw_progress_bar(screen, trial_idx, TOTAL_TRIALS, block_idx, NUM_BLOCKS)
             pygame.display.flip()
-            key = handle_events(allow_space=True)
-            if key == "space":
-                send_marker(f"READY_B{block_idx+1}_T{trial_idx+1}_C{class_id}")
-                waiting_for_space = False
-            elif key == "skip_block":
-                skip_current_block = True; waiting_for_space = False
-            elif key == "end":
-                end_experiment = True; waiting_for_space = False
+            key = handle_events()
+            if key == "skip_block":
+                skip_current_block = True; break
+            if key == "end":
+                end_experiment = True; break
 
         if skip_current_block or end_experiment:
             break
 
-        # ── 4. MI ────────────────────────────────────────────────
-        send_marker(f"MI_START_B{block_idx+1}_T{trial_idx+1}_C{class_id}")
+        # ── 3.5. 倒计时 3-2-1 ─────────────────────────────────────
+        key = run_countdown(screen, virtual_screen, trial_idx, block_idx, total_ms=3000)
+        if key == "skip_block":
+            skip_current_block = True
+        elif key == "end":
+            end_experiment = True
+
+        if skip_current_block or end_experiment:
+            break
+
+        # ── 4. MI（虚线辅助运动想象）─────────────────────────────
+        mi_key_start = "MI_START_HENG" if trial_type == "横" else "MI_START_SHU"
+        mi_key_end = "MI_END_HENG" if trial_type == "横" else "MI_END_SHU"
+        send_trigger(TRIGGER[mi_key_start])
+        print(f"[TRIGGER] {mi_key_start} B{block_idx+1} T{trial_idx+1}")
+
+        # 虚线参数：从马里奥出发到目标金币，速度匹配反馈动画中马里奥的行进速度
+        dash_start = (MARIO_X + 18, MARIO_Y + 11)
+        dash_end = (stage_coin_x + 10, stage_coin_y + 10)
+        # 横：马里奥跑到Goomba处约800ms；竖：马里奥跳到最高点约1000ms
+        dash_duration = 800 if trial_type == "横" else 1000
+
         mi_start = pygame.time.get_ticks()
         while pygame.time.get_ticks() - mi_start < 4000:
+            mi_elapsed = pygame.time.get_ticks() - mi_start
+
             draw_retro_scenery(virtual_screen)
             virtual_screen.blit(goomba_normal, (GOOMBA_X, GOOMBA_Y))
             virtual_screen.blit(stage_coin_img, (stage_coin_x, stage_coin_y))
             virtual_screen.blit(mario_stand, (MARIO_X, MARIO_Y))
+
+            # 虚线按马里奥行进速度生长，完成后保持完整虚线
+            dash_progress = min(1.0, mi_elapsed / dash_duration)
+            draw_growing_dashed_line(virtual_screen, dash_start, dash_end,
+                                     dash_progress, COLOR_WHITE, dash_len=4, gap_len=4)
 
             screen.fill((0, 0, 0))
             screen.blit(pygame.transform.scale(virtual_screen, (GAME_WIDTH * SCALE, GAME_HEIGHT * SCALE)), (OFFSET_X, OFFSET_Y))
@@ -631,13 +828,13 @@ for block_idx in range(NUM_BLOCKS):
                 skip_current_block = True; break
             if key == "end":
                 end_experiment = True; break
-        send_marker(f"MI_END_B{block_idx+1}_T{trial_idx+1}_C{class_id}")
+        send_trigger(TRIGGER[mi_key_end])
+        print(f"[TRIGGER] {mi_key_end} B{block_idx+1} T{trial_idx+1}")
 
         if skip_current_block or end_experiment:
             break
 
         # ── 5. FEEDBACK ──────────────────────────────────────────
-        send_marker(f"FEEDBACK_START_B{block_idx+1}_T{trial_idx+1}_C{class_id}")
         anim_start = pygame.time.get_ticks()
         coin_eaten = False
         goomba_hit = False
@@ -662,7 +859,6 @@ for block_idx in range(NUM_BLOCKS):
                     goomba_hit = True
                     if coin_sound:
                         coin_sound.play()
-                    send_marker(f"COIN_EATEN_B{block_idx+1}_T{trial_idx+1}_C{class_id}")
                 if not coin_eaten:
                     virtual_screen.blit(stage_coin_img, (stage_coin_x, stage_coin_y))
                 if goomba_hit:
@@ -695,7 +891,6 @@ for block_idx in range(NUM_BLOCKS):
                     coin_count += 1
                     if coin_sound:
                         coin_sound.play()
-                    send_marker(f"COIN_EATEN_B{block_idx+1}_T{trial_idx+1}_C{class_id}")
                 bullet_x = GOOMBA_X - int((GOOMBA_X + 20) * progress)
                 if bullet_x > -10:
                     pygame.draw.circle(virtual_screen, (16, 16, 24), (bullet_x, GOOMBA_Y + 10), 5)
@@ -714,8 +909,6 @@ for block_idx in range(NUM_BLOCKS):
                 skip_current_block = True; break
             if key == "end":
                 end_experiment = True; break
-
-        send_marker(f"FEEDBACK_END_B{block_idx+1}_T{trial_idx+1}_C{class_id}")
 
         if skip_current_block or end_experiment:
             break
@@ -741,7 +934,8 @@ for block_idx in range(NUM_BLOCKS):
             break
 
     # ── BLOCK 结束 ──────────────────────────────────────────────
-    send_marker(f"BLOCK_END_{block_idx + 1}")
+    send_trigger(TRIGGER["BLOCK_END"])
+    print(f"[TRIGGER] BLOCK_END Block {block_idx + 1}")
 
     if end_experiment:
         break
@@ -751,11 +945,9 @@ for block_idx in range(NUM_BLOCKS):
         break
 
     if block_idx < NUM_BLOCKS - 1:
-        send_marker(f"REST_BLOCK_START_{block_idx + 1}")
         key = run_rest_block(screen, virtual_screen, duration_ms=15000)
-        send_marker(f"REST_BLOCK_END_{block_idx + 1}")
         if key == "end":
             break
 
-send_marker("EXPERIMENT_END")
+send_trigger(TRIGGER["EXPERIMENT_END"])
 pygame.quit()

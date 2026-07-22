@@ -1,0 +1,13 @@
+from psychopy import parallel
+import time
+
+# 这里地址先填你看到的地址
+port = parallel.ParallelPort(address=0x3FF8)
+
+print("Send Trigger 1")
+
+port.setData(1)
+time.sleep(0.01)
+port.setData(0)
+
+print("Done")
