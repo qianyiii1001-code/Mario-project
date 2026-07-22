@@ -2,7 +2,7 @@
 #   基于 v3_0_6 架构
 #   正式实验前增加 10 个学习试次（左5 + 右5），含虚线引导
 #   6 Block × 25 trial = 150 试次
-#   闭眼静息 90s 仅实验前一次，Block 间只有 15s 休息放空
+#   学习试次后：闭眼静息90s → 睁眼静息90s，均有Marker; Block间仅15s休息
 #   指导语改为"抓握动作"想象
 #   学习试次不显示"虚线引导路径"文字
 import pygame
@@ -21,6 +21,7 @@ import pygame
 # 如果环境不具备并口，程序仍可运行（仅打印日志，不发送硬件信号）
 
 import ctypes as _ctypes
+import os as _os
 
 # ── 并口初始化 ──────────────────────────────────────────────────
 # 常见地址: LPT1=0x0378, LPT2=0x0278, LPT3=0x03BC
@@ -30,19 +31,27 @@ _inpout = None
 _PARALLEL_OK = False
 
 try:
-    # 尝试加载 64 位驱动
-    _inpout = _ctypes.WinDLL("inpoutx64.dll")
-    print("[并口] 加载 inpoutx64.dll (64位驱动)")
-except OSError:
-    pass
+    # 尝试加载 64 位驱动（先试完整路径）
+    _dll_path = r"C:\Windows\System32\inpoutx64.dll"
+    if not _os.path.exists(_dll_path):
+        _dll_path = "inpoutx64.dll"  # fallback: 当前目录/PATH
+    _inpout = _ctypes.WinDLL(_dll_path)
+    print(f"[并口] 加载 inpoutx64.dll (64位驱动) from {_dll_path}")
+except OSError as _e:
+    print(f"[并口] 加载 inpoutx64.dll 失败: {_e}")
 
 if _inpout is None:
     try:
         # 尝试加载 32 位驱动
-        _inpout = _ctypes.WinDLL("inpout32.dll")
-        print("[并口] 加载 inpout32.dll (32位驱动)")
-    except OSError:
-        pass
+        _dll_path = r"C:\Windows\SysWOW64\inpout32.dll"
+        if not _os.path.exists(_dll_path):
+            _dll_path = r"C:\Windows\System32\inpout32.dll"
+        if not _os.path.exists(_dll_path):
+            _dll_path = "inpout32.dll"
+        _inpout = _ctypes.WinDLL(_dll_path)
+        print(f"[并口] 加载 inpout32.dll (32位驱动) from {_dll_path}")
+    except OSError as _e:
+        print(f"[并口] 加载 inpout32.dll 失败: {_e}")
 
 if _inpout is None:
     print("[并口] 驱动未找到: 请将 inpout32.dll 或 inpoutx64.dll 放到 C:\\Windows\\System32\\")
@@ -62,7 +71,6 @@ if not _PARALLEL_OK:
 # ==========================================
 # 自动路径配置（由fix_paths.py生成）
 # ==========================================
-import os as _os
 _BASE_DIR = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
 _FONT_DIR = _os.path.join(_BASE_DIR, "assets", "fonts")
 _IMG_DIR  = _os.path.join(_BASE_DIR, "assets", "images")
@@ -982,6 +990,17 @@ print(f"[LEARN] ===== 学习试次阶段结束（获得 {coin_count} 枚金币�
 
 # ── 实验开始前闭眼静息 90s ─────────────────────────────────
 key = run_rest_block(screen, virtual_screen, duration_ms=90000, hint_text="【闭眼静息中】", trigger_start=TRIGGER["REST_CLOSED_START"], trigger_end=TRIGGER["REST_CLOSED_END"])
+if key == "end":
+    send_trigger(TRIGGER["EXPERIMENT_END"])
+    pygame.quit()
+    sys.exit()
+
+# 闭眼静息结束 → 音效提示被试睁眼
+if coin_sound:
+    coin_sound.play()
+
+# ── 实验开始前睁眼静息 90s ─────────────────────────────────
+key = run_rest_block(screen, virtual_screen, duration_ms=90000, hint_text="【睁眼静息中】", trigger_start=TRIGGER["REST_OPEN_START"], trigger_end=TRIGGER["REST_OPEN_END"])
 if key == "end":
     send_trigger(TRIGGER["EXPERIMENT_END"])
     pygame.quit()
